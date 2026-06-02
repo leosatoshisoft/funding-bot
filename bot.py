@@ -88,10 +88,11 @@ def get_funding_rates(bybit_perp) -> dict:
                 rate = data.get("fundingRate", 0)
                 if rate is not None:
                     rates[symbol] = float(rate) * 100
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning(f"  {symbol}: {e}")
     except Exception as e:
         log.error(f"Error al obtener funding rates: {e}")
+    log.info(f"Rates obtenidos: {len(rates)} símbolos → {rates}")
     return rates
 
 # ─── Position manager ────────────────────────────────────────────────────────
