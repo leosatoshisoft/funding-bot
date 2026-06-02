@@ -53,12 +53,19 @@ class Config:
 
 # ─── Exchange clients ────────────────────────────────────────────────────────
 def init_exchanges():
-    bybit = ccxt.bybit({
+    bybit_spot = ccxt.bybit({
         "apiKey": Config.BYBIT_API_KEY,
         "secret": Config.BYBIT_API_SECRET,
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
     })
+    bybit_perp = ccxt.bybit({
+        "apiKey": Config.BYBIT_API_KEY,
+        "secret": Config.BYBIT_API_SECRET,
+        "enableRateLimit": True,
+        "options": {"defaultType": "linear"},
+    })
+    return bybit_spot, bybit_perp
 
     binance = ccxt.binance({
         "apiKey": Config.BINANCE_API_KEY,
@@ -71,40 +78,21 @@ def init_exchanges():
 
 
 # ─── Funding rate fetcher ────────────────────────────────────────────────────
-def get_funding_rates(binance) -> dict:
-    """Obtiene funding rates de Binance perp para todos los símbolos."""
+def get_funding_rates(bybit_perp) -> dict:
+    """Obtiene funding rates de Bybit perp."""
     rates = {}
     try:
-        # Trae todos los funding rates de una sola llamada
-        markets = binance.fetch_funding_rates(Config.SYMBOLS)
-        for symbol, data in markets.items():
-            rate = data.get("fundingRate", 0)
-            if rate is not None:
-                rates[symbol] = float(rate) * 100  # en porcentaje
+        for symbol in Config.SYMBOLS:
+            try:
+                data = bybit_perp.fetch_funding_rate(symbol)
+                rate = data.get("fundingRate", 0)
+                if rate is not None:
+                    rates[symbol] = float(rate) * 100
+            except Exception:
+                pass
     except Exception as e:
         log.error(f"Error al obtener funding rates: {e}")
     return rates
-
-
-def get_bybit_funding_rates(bybit) -> dict:
-    """Obtiene funding rates de Bybit perp para comparar."""
-    rates = {}
-    try:
-        bybit_perp = ccxt.bybit({
-            "apiKey": Config.BYBIT_API_KEY,
-            "secret": Config.BYBIT_API_SECRET,
-            "enableRateLimit": True,
-            "options": {"defaultType": "linear"},
-        })
-        markets = bybit_perp.fetch_funding_rates(Config.SYMBOLS)
-        for symbol, data in markets.items():
-            rate = data.get("fundingRate", 0)
-            if rate is not None:
-                rates[symbol] = float(rate) * 100
-    except Exception as e:
-        log.error(f"Error al obtener funding rates Bybit: {e}")
-    return rates
-
 
 # ─── Position manager ────────────────────────────────────────────────────────
 class PositionManager:
