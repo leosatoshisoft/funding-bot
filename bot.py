@@ -12,6 +12,9 @@ from typing import Optional
 import ccxt
 
 # ─── Logging ────────────────────────────────────────────────────────────────
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
