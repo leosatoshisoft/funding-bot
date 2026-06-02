@@ -45,10 +45,15 @@ class Config:
 
     # Pares a monitorear
     SYMBOLS = [
-        "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
-        "XRP/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT",
-        "ADA/USDT", "DOT/USDT",
-    ]
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT", 
+    "SOL/USDT:USDT",
+    "BNB/USDT:USDT",
+    "XRP/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "AVAX/USDT:USDT",
+    "LINK/USDT:USDT",
+]
 
 
 # ─── Exchange clients ────────────────────────────────────────────────────────
@@ -89,7 +94,7 @@ def get_funding_rates(bybit_perp) -> dict:
                 if rate is not None:
                     rates[symbol] = float(rate) * 100
             except Exception as e:
-                log.warning(f"  {symbol}: {e}")
+                log.debug(f"  {symbol}: {e}")
     except Exception as e:
         log.error(f"Error al obtener funding rates: {e}")
     log.info(f"Rates obtenidos: {len(rates)} símbolos → {rates}")
