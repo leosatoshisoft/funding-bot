@@ -305,7 +305,7 @@ class FundingBot:
         log.info("Iniciando ciclo de evaluación...")
 
         binance_rates = get_funding_rates(self.binance)
-        bybit_rates   = get_bybit_funding_rates(self.bybit)
+        bybit_rates   = binance_rates  # mismo exchange, mismos rates
 
         if not binance_rates:
             log.warning("No se pudieron obtener funding rates, reintentando en el próximo ciclo.")
