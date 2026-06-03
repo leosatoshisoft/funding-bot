@@ -11,6 +11,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 import ccxt
+try:
+    from pybit.unified_trading import HTTP as PybitHTTP
+    PYBIT_OK = True
+except ImportError:
+    PYBIT_OK = False
+    log_placeholder = None
 
 os.makedirs("logs", exist_ok=True)
 os.makedirs("data", exist_ok=True)
@@ -413,6 +419,28 @@ class FundingBot:
         ms = modes.get(short_ex, "real")
         return ml if ml == ms else f"{ml}/{ms}"
 
+    def _execute_order(self, exchange, symbol, amount, side):
+        """Ejecuta una orden de mercado. Usa pybit para Bybit demo, ccxt para el resto."""
+        if exchange == "bybit" and "bybit_pybit" in self.trade_clients:
+            # pybit: símbolo sin el sufijo :USDT, category=linear
+            sym_clean = symbol.replace("/USDT:USDT", "USDT").replace("/", "")
+            result = self.trade_clients["bybit_pybit"].place_order(
+                category="linear",
+                symbol=sym_clean,
+                side=side,
+                orderType="Market",
+                qty=str(round(amount, 6)),
+            )
+            if result.get("retCode") != 0:
+                raise Exception(f"Bybit pybit error: {result.get('retMsg')}")
+            return result
+        else:
+            cl = self.trade_clients[exchange]
+            if side == "Buy":
+                return cl.create_market_buy_order(symbol, amount)
+            else:
+                return cl.create_market_sell_order(symbol, amount)
+
     def open_spread(self, symbol, spread, long_ex, short_ex):
         if self.pm.get_by_symbol(symbol) or self.pm.count() >= Config.MAX_POSITIONS:
             return
@@ -435,17 +463,27 @@ class FundingBot:
                 log.info(f"[PAPER] LONG  {symbol} @ ${price:.4f} → {long_ex}")
                 log.info(f"[PAPER] SHORT {symbol} @ ${price:.4f} → {short_ex} | Spread: {spread:.4f}%")
             else:
-                for ex_name in [long_ex, short_ex]:
-                    cl = self.trade_clients[ex_name]
-                    if not cl.markets:
-                        try:
-                            cl.load_markets()
-                        except Exception as me:
-                            log.debug(f"load_markets {ex_name}: {me}")
-                self.trade_clients[long_ex].create_market_buy_order(symbol, amount)
-                log.info(f"[{mode.upper()}] LONG {symbol} {amount:.6f} → {long_ex}")
-                self.trade_clients[short_ex].create_market_sell_order(symbol, amount)
-                log.info(f"[{mode.upper()}] SHORT {symbol} {amount:.6f} → {short_ex}")
+                # Formato de símbolo por exchange
+                def fmt_sym(ex, sym):
+                    if ex == "bitget":
+                        # Bitget usa BTCUSDT_UMCBL o BTC/USDT:USDT segun la version
+                        return sym  # ccxt maneja la conversion internamente
+                    return sym
+
+                long_sym  = fmt_sym(long_ex, symbol)
+                short_sym = fmt_sym(short_ex, symbol)
+
+                log.info(f"Ejecutando LONG {long_sym} en {long_ex}...")
+                self.trade_clients[long_ex].create_market_buy_order(
+                    long_sym, amount, params={"tdMode": "cross"} if long_ex == "okx" else {}
+                )
+                log.info(f"[{mode.upper()}] LONG {symbol} {amount:.6f} → {long_ex} OK")
+
+                log.info(f"Ejecutando SHORT {short_sym} en {short_ex}...")
+                self.trade_clients[short_ex].create_market_sell_order(
+                    short_sym, amount, params={"tdMode": "cross"} if short_ex == "okx" else {}
+                )
+                log.info(f"[{mode.upper()}] SHORT {symbol} {amount:.6f} → {short_ex} OK")
 
             pos = {
                 "id": uid, "symbol": symbol, "spot_symbol": spot_sym,
@@ -466,10 +504,8 @@ class FundingBot:
     def close_position(self, pos, reason="manual"):
         try:
             if not Config.PAPER_TRADING:
-                self.trade_clients[pos["long_exchange"]].create_market_sell_order(
-                    pos["symbol"], pos["amount"])
-                self.trade_clients[pos["short_exchange"]].create_market_buy_order(
-                    pos["symbol"], pos["amount"])
+                self._execute_order(pos["long_exchange"],  pos["symbol"], pos["amount"], "Sell")
+                self._execute_order(pos["short_exchange"], pos["symbol"], pos["amount"], "Buy")
             fees = Config.CAPITAL_PER_TRADE * 0.002
             pnl  = pos["funding_collected"] - fees
             self.tl.log_close(pos["id"], pos["funding_collected"], pnl)
