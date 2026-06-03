@@ -90,18 +90,17 @@ def init_exchanges():
             "options": {"defaultType": "linear"},
         }
         if Config.BYBIT_DEMO:
-            # Endpoint demo correcto de Bybit
-            bybit_trade["urls"] = {
-                "api": {
-                    "public":  "https://api-demo.bybit.com",
-                    "private": "https://api-demo.bybit.com",
-                }
-            }
+            # ccxt Bybit demo: usar set_sandbox_mode despues de crear el cliente
+            pass
         trade_clients["bybit"] = ccxt.bybit(bybit_trade)
+        if Config.BYBIT_DEMO:
+            trade_clients["bybit"].set_sandbox_mode(True)
         # Cliente spot para compras
-        bybit_spot = dict(bybit_trade)
-        bybit_spot["options"] = {"defaultType": "spot"}
-        trade_clients["bybit_spot"] = ccxt.bybit(bybit_spot)
+        bybit_spot_cfg = dict(bybit_trade)
+        bybit_spot_cfg["options"] = {"defaultType": "spot"}
+        trade_clients["bybit_spot"] = ccxt.bybit(bybit_spot_cfg)
+        if Config.BYBIT_DEMO:
+            trade_clients["bybit_spot"].set_sandbox_mode(True)
     log.info(f"Bybit rates: publico | trade: {'demo' if Config.BYBIT_DEMO else 'real' if Config.BYBIT_API_KEY else 'sin key'}")
 
     # ── Binance ────────────────────────────────────────────────────────────────
@@ -424,14 +423,22 @@ class FundingBot:
                not can_trade(short_ex, self.trade_clients):
                 log.warning(f"[spread] Skip {symbol}: {long_ex}/{short_ex} sin trade client")
                 return
+            # Bybit usa sandbox mode via set_sandbox_mode(True)
+                return
 
         uid  = self._uid(symbol, "spread")
         mode = self._position_mode(long_ex, short_ex)
 
         try:
-            # Precio via cliente de rates (publico, siempre disponible)
-            ref    = self.rate_clients.get(long_ex, list(self.rate_clients.values())[0])
-            ticker = ref.fetch_ticker(Config.spot_symbol(symbol))
+            # Precio via Binance publico (mas estable para ticker)
+            spot_sym = Config.spot_symbol(symbol)
+            try:
+                ticker = self.rate_clients["binance"].fetch_ticker(spot_sym)
+                price  = float(ticker["last"])
+            except Exception:
+                ref    = list(self.rate_clients.values())[0]
+                ticker = ref.fetch_ticker(spot_sym)
+                price  = float(ticker["last"])
             price  = float(ticker["last"])
             amount = Config.CAPITAL_PER_TRADE / price
 
@@ -514,9 +521,9 @@ class FundingBot:
             elif best_spread >= Config.MIN_SPREAD:
                 lo, sh = data["spread_long"], data["spread_short"]
                 # Verificar que ambos exchanges tengan trade client
-                if Config.PAPER_TRADING or \
-                   (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients)):
-                    status = f"SPREAD {lo}→{sh}"
+                if lo and sh and (Config.PAPER_TRADING or
+                   (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients))):
+                    spread_opps.append((sym, best_spread, lo, sh))
                 else:
                     status = f"sin key ({lo}/{sh})"
             else:
@@ -526,8 +533,8 @@ class FundingBot:
 
             if not has_pos and best_spread >= Config.MIN_SPREAD:
                 lo, sh = data["spread_long"], data["spread_short"]
-                if Config.PAPER_TRADING or \
-                   (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients)):
+                if lo and sh and (Config.PAPER_TRADING or
+                   (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients))):
                     spread_opps.append((sym, best_spread, lo, sh))
 
         # Actualizar funding
