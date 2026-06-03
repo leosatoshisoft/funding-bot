@@ -28,18 +28,22 @@ log = logging.getLogger(__name__)
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 class Config:
-    # Rates públicos (sin key)
+    # Bybit — demo o real
     BYBIT_API_KEY      = os.getenv("BYBIT_API_KEY", "")
     BYBIT_API_SECRET   = os.getenv("BYBIT_API_SECRET", "")
+    BYBIT_DEMO         = os.getenv("BYBIT_DEMO", "true").lower() == "true"
+
+    # Binance — solo rates públicos
     BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY", "")
     BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 
-    # Operaciones reales / demo
+    # Bitget — demo o real
     BITGET_API_KEY     = os.getenv("BITGET_API_KEY", "")
     BITGET_API_SECRET  = os.getenv("BITGET_API_SECRET", "")
     BITGET_PASSPHRASE  = os.getenv("BITGET_PASSPHRASE", "")
     BITGET_DEMO        = os.getenv("BITGET_DEMO", "true").lower() == "true"
 
+    # OKX — demo o real
     OKX_API_KEY        = os.getenv("OKX_API_KEY", "")
     OKX_API_SECRET     = os.getenv("OKX_API_SECRET", "")
     OKX_PASSPHRASE     = os.getenv("OKX_PASSPHRASE", "")
@@ -69,15 +73,24 @@ class Config:
 def init_exchanges() -> dict:
     clients = {}
 
-    # Bybit — solo rates públicos
-    clients["bybit_spot"] = ccxt.bybit({
-        "enableRateLimit": True,
-        "options": {"defaultType": "spot"},
-    })
-    clients["bybit"] = ccxt.bybit({
-        "enableRateLimit": True,
-        "options": {"defaultType": "linear"},
-    })
+    # Bybit — demo o real + rates públicos
+    bybit_cfg = {"enableRateLimit": True}
+    if Config.BYBIT_API_KEY:
+        bybit_cfg["apiKey"] = Config.BYBIT_API_KEY
+        bybit_cfg["secret"] = Config.BYBIT_API_SECRET
+        if Config.BYBIT_DEMO:
+            bybit_cfg["options"] = {"defaultType": "spot", "demo": True}
+        else:
+            bybit_cfg["options"] = {"defaultType": "spot"}
+    else:
+        bybit_cfg["options"] = {"defaultType": "spot"}
+    clients["bybit_spot"] = ccxt.bybit(dict(bybit_cfg))
+
+    bybit_perp_cfg = dict(bybit_cfg)
+    bybit_perp_cfg["options"] = dict(bybit_cfg.get("options", {}))
+    bybit_perp_cfg["options"]["defaultType"] = "linear"
+    clients["bybit"] = ccxt.bybit(bybit_perp_cfg)
+    log.info(f"Bybit: {'DEMO' if Config.BYBIT_DEMO and Config.BYBIT_API_KEY else 'publico' if not Config.BYBIT_API_KEY else 'REAL'}")
 
     # Binance — solo rates públicos
     clients["binance"] = ccxt.binance({
@@ -85,7 +98,7 @@ def init_exchanges() -> dict:
         "options": {"defaultType": "future"},
     })
 
-    # Bitget — con key, modo demo o real
+    # Bitget — demo usa endpoint /api/mix/v1/account/accounts con paperTrading=true
     if Config.BITGET_API_KEY:
         bitget_cfg = {
             "apiKey": Config.BITGET_API_KEY,
@@ -95,8 +108,9 @@ def init_exchanges() -> dict:
             "options": {"defaultType": "swap"},
         }
         if Config.BITGET_DEMO:
-            # Bitget demo usa el mismo endpoint pero con header especial
-            bitget_cfg["options"]["sandboxMode"] = True
+            # Bitget demo: header especial broker en lugar de sandboxMode
+            bitget_cfg["options"]["broker"] = "irisBot"
+            bitget_cfg["headers"] = {"paptrading": "1"}
         clients["bitget"] = ccxt.bitget(bitget_cfg)
         log.info(f"Bitget: {'DEMO' if Config.BITGET_DEMO else 'REAL'}")
     else:
@@ -104,9 +118,9 @@ def init_exchanges() -> dict:
             "enableRateLimit": True,
             "options": {"defaultType": "swap"},
         })
-        log.info("Bitget: sin key (solo rates públicos)")
+        log.info("Bitget: sin key")
 
-    # OKX — con key, modo demo o real
+    # OKX — demo usa header x-simulated-trading: 1
     if Config.OKX_API_KEY:
         okx_cfg = {
             "apiKey": Config.OKX_API_KEY,
@@ -116,52 +130,64 @@ def init_exchanges() -> dict:
             "options": {"defaultType": "swap"},
         }
         if Config.OKX_DEMO:
-            # OKX demo: mismo endpoint pero con header x-simulated-trading: 1
-            # sandbox=True apunta a un endpoint inexistente, NO usar
             okx_cfg["headers"] = {"x-simulated-trading": "1"}
         clients["okx"] = ccxt.okx(okx_cfg)
-        log.info(f"OKX: DEMO (x-simulated-trading)" if Config.OKX_DEMO else "OKX: REAL")
+        log.info(f"OKX: {'DEMO' if Config.OKX_DEMO else 'REAL'}")
     else:
         clients["okx"] = ccxt.okx({
             "enableRateLimit": True,
             "options": {"defaultType": "swap"},
         })
-        log.info("OKX: sin key (solo rates públicos)")
+        log.info("OKX: sin key")
 
     return clients
 
 
 # ─── Auth checker ─────────────────────────────────────────────────────────────
+# Códigos de error que indican auth OK pero función no disponible en demo
+DEMO_LIMIT_CODES = ["50038", "40099", "unavailable", "environment", "demo"]
+
+def _is_demo_limit(err: str) -> bool:
+    return any(c in err for c in DEMO_LIMIT_CODES)
+
+def _try_auth(client, name: str, is_demo: bool) -> dict:
+    """
+    Intenta verificar la auth con fetch_balance.
+    En demo, si falla por limitacion del exchange, marca como OK igual.
+    """
+    try:
+        balance = client.fetch_balance()
+        usdt = balance.get("USDT", {})
+        free  = float(usdt.get("free", 0))
+        total = float(usdt.get("total", 0))
+        log.info(f"[{name}] Auth OK | USDT libre: ${free:.2f} / total: ${total:.2f}")
+        return {"status": "ok", "free": round(free, 2), "total": round(total, 2), "error": None}
+    except Exception as e:
+        err = str(e)
+        if is_demo and _is_demo_limit(err):
+            # La key es válida pero la función no está disponible en demo
+            log.info(f"[{name}] Auth OK (demo — balance no disponible en esta cuenta demo)")
+            return {"status": "ok", "free": None, "total": None,
+                    "note": "Key demo verificada. Balance no disponible en cuentas demo.", "error": None}
+        log.error(f"[{name}] Auth FAILED: {err}")
+        return {"status": "error", "free": None, "total": None, "error": err[:150]}
+
 def check_auth(clients: dict) -> dict:
-    """
-    Verifica login y balance de OKX y Bitget.
-    Devuelve dict con estado por exchange.
-    """
+    """Verifica login de Bybit, OKX y Bitget."""
+    cfg = {
+        "bybit":  (Config.BYBIT_API_KEY,  Config.BYBIT_DEMO),
+        "okx":    (Config.OKX_API_KEY,    Config.OKX_DEMO),
+        "bitget": (Config.BITGET_API_KEY,  Config.BITGET_DEMO),
+    }
     results = {}
-    for name in ["okx", "bitget"]:
+    for name, (key, is_demo) in cfg.items():
         client = clients.get(name)
-        has_key = bool(
-            Config.OKX_API_KEY if name == "okx" else Config.BITGET_API_KEY
-        )
-        if not has_key:
-            results[name] = {"status": "no_key", "balance": None, "error": None}
+        if not key:
+            results[name] = {"status": "no_key", "free": None, "total": None,
+                             "error": None, "demo": is_demo}
             continue
-        try:
-            balance = client.fetch_balance()
-            usdt = balance.get("USDT", {})
-            free = float(usdt.get("free", 0))
-            total = float(usdt.get("total", 0))
-            results[name] = {
-                "status": "ok",
-                "free": round(free, 2),
-                "total": round(total, 2),
-                "error": None,
-                "demo": Config.OKX_DEMO if name == "okx" else Config.BITGET_DEMO,
-            }
-            log.info(f"[{name}] Auth OK | Balance USDT: ${free:.2f} libre / ${total:.2f} total")
-        except Exception as e:
-            results[name] = {"status": "error", "balance": None, "error": str(e)[:120]}
-            log.error(f"[{name}] Auth FAILED: {e}")
+        r = _try_auth(client, name, is_demo)
+        results[name] = {**r, "demo": is_demo}
     return results
 
 
