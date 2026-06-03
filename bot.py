@@ -418,43 +418,39 @@ class FundingBot:
             return
 
         if not Config.PAPER_TRADING:
-            if not can_trade(long_ex, self.trade_clients) or \
-               not can_trade(short_ex, self.trade_clients):
+            if not can_trade(long_ex, self.trade_clients) or not can_trade(short_ex, self.trade_clients):
                 log.warning(f"[spread] Skip {symbol}: {long_ex}/{short_ex} sin trade client")
-                return
-            # Bybit usa sandbox mode via set_sandbox_mode(True)
                 return
 
         uid  = self._uid(symbol, "spread")
         mode = self._position_mode(long_ex, short_ex)
 
         try:
-            # Precio via Binance publico (mas estable para ticker)
             spot_sym = Config.spot_symbol(symbol)
-            try:
-                ticker = self.rate_clients["binance"].fetch_ticker(spot_sym)
-                price  = float(ticker["last"])
-            except Exception:
-                ref    = list(self.rate_clients.values())[0]
-                ticker = ref.fetch_ticker(spot_sym)
-                price  = float(ticker["last"])
+            ticker = self.rate_clients["binance"].fetch_ticker(spot_sym)
             price  = float(ticker["last"])
             amount = Config.CAPITAL_PER_TRADE / price
 
             if Config.PAPER_TRADING:
-                log.info(f"[PAPER] LONG  {symbol} → {long_ex}")
-                log.info(f"[PAPER] SHORT {symbol} → {short_ex} | Spread: {spread:.4f}%")
+                log.info(f"[PAPER] LONG  {symbol} @ ${price:.4f} → {long_ex}")
+                log.info(f"[PAPER] SHORT {symbol} @ ${price:.4f} → {short_ex} | Spread: {spread:.4f}%")
             else:
+                for ex_name in [long_ex, short_ex]:
+                    cl = self.trade_clients[ex_name]
+                    if not cl.markets:
+                        try:
+                            cl.load_markets()
+                        except Exception as me:
+                            log.debug(f"load_markets {ex_name}: {me}")
                 self.trade_clients[long_ex].create_market_buy_order(symbol, amount)
+                log.info(f"[{mode.upper()}] LONG {symbol} {amount:.6f} → {long_ex}")
                 self.trade_clients[short_ex].create_market_sell_order(symbol, amount)
-                log.info(f"[{mode.upper()}] LONG {long_ex} / SHORT {short_ex} ejecutado")
+                log.info(f"[{mode.upper()}] SHORT {symbol} {amount:.6f} → {short_ex}")
 
             pos = {
-                "id": uid, "symbol": symbol,
-                "spot_symbol": Config.spot_symbol(symbol),
+                "id": uid, "symbol": symbol, "spot_symbol": spot_sym,
                 "capital": Config.CAPITAL_PER_TRADE, "amount": amount,
-                "entry_price": price, "entry_rate": spread,
-                "strategy": "spread",
+                "entry_price": price, "entry_rate": spread, "strategy": "spread",
                 "long_exchange": long_ex, "short_exchange": short_ex,
                 "opened_at": datetime.utcnow().isoformat(),
                 "funding_collected": 0, "funding_cycles": 0,
@@ -467,7 +463,6 @@ class FundingBot:
 
         except Exception as e:
             log.error(f"Error abriendo {symbol}: {e}")
-
     def close_position(self, pos, reason="manual"):
         try:
             if not Config.PAPER_TRADING:
