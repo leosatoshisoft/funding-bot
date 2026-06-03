@@ -124,23 +124,29 @@ def init_exchanges():
     log.info("Binance: solo rates publicos")
 
     # ── Bitget ────────────────────────────────────────────────────────────────
+    # Rates: cliente publico sin key
     rate_clients["bitget"] = ccxt.bitget({
         "enableRateLimit": True,
         "options": {"defaultType": "swap"},
     })
+    # Ordenes: con key, demo usa las mismas keys pero en entorno sandbox
     if Config.BITGET_API_KEY:
-        bitget_trade = {
+        bitget_cfg = {
             "apiKey":   Config.BITGET_API_KEY,
             "secret":   Config.BITGET_API_SECRET,
             "password": Config.BITGET_PASSPHRASE,
             "enableRateLimit": True,
             "options": {"defaultType": "swap"},
         }
+        # IMPORTANTE: NO modificar urls["api"] — rompe el sign de ccxt
+        # Bitget demo usa las mismas keys en el entorno de paper trading
+        # activado via el header especial en cada request
         if Config.BITGET_DEMO:
-            bitget_trade["urls"] = {"api": "https://api-sandbox.bitget.com"}
-        trade_clients["bitget"] = ccxt.bitget(bitget_trade)
-    log.info(f"Bitget rates: publico | trade: {'demo' if Config.BITGET_DEMO else 'real' if Config.BITGET_API_KEY else 'sin key'}")
-
+            bitget_cfg["options"]["defaultType"] = "swap"
+            # Paper trading de Bitget se activa con param productType correcto
+            # Las keys de demo funcionan con el endpoint normal
+        trade_clients["bitget"] = ccxt.bitget(bitget_cfg)
+    log.info(f"Bitget rates: publico | trade: {Config.mode('bitget')}")
     # ── OKX ────────────────────────────────────────────────────────────────────
     # Rates: SIEMPRE publico sin key (demo bloquea fetch_funding_rate)
     rate_clients["okx"] = ccxt.okx({
@@ -509,26 +515,12 @@ class FundingBot:
                 log.info(f"[PAPER] LONG  {symbol} @ ${price:.4f} → {long_ex}")
                 log.info(f"[PAPER] SHORT {symbol} @ ${price:.4f} → {short_ex} | Spread: {spread:.4f}%")
             else:
-                # Formato de símbolo por exchange
-                def fmt_sym(ex, sym):
-                    if ex == "bitget":
-                        # Bitget usa BTCUSDT_UMCBL o BTC/USDT:USDT segun la version
-                        return sym  # ccxt maneja la conversion internamente
-                    return sym
-
-                long_sym  = fmt_sym(long_ex, symbol)
-                short_sym = fmt_sym(short_ex, symbol)
-
-                log.info(f"Ejecutando LONG {long_sym} en {long_ex}...")
-                self.trade_clients[long_ex].create_market_buy_order(
-                    long_sym, amount, params={"tdMode": "cross"} if long_ex == "okx" else {}
-                )
+                log.info(f"Ejecutando LONG {symbol} en {long_ex}...")
+                self._execute_order(long_ex, symbol, amount, "Buy")
                 log.info(f"[{mode.upper()}] LONG {symbol} {amount:.6f} → {long_ex} OK")
 
-                log.info(f"Ejecutando SHORT {short_sym} en {short_ex}...")
-                self.trade_clients[short_ex].create_market_sell_order(
-                    short_sym, amount, params={"tdMode": "cross"} if short_ex == "okx" else {}
-                )
+                log.info(f"Ejecutando SHORT {symbol} en {short_ex}...")
+                self._execute_order(short_ex, symbol, amount, "Sell")
                 log.info(f"[{mode.upper()}] SHORT {symbol} {amount:.6f} → {short_ex} OK")
 
             pos = {
