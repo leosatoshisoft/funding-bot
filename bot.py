@@ -1,6 +1,7 @@
 """
 Funding Rate Arbitrage Bot
 Spot en Bybit + mejor perp entre Bybit / Binance / Bitget / OKX
+APIs públicas para rates — keys solo necesarias en modo real
 """
 
 import os
@@ -28,17 +29,13 @@ log = logging.getLogger(__name__)
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 class Config:
-    # Bybit (spot + perp)
     BYBIT_API_KEY       = os.getenv("BYBIT_API_KEY", "")
     BYBIT_API_SECRET    = os.getenv("BYBIT_API_SECRET", "")
-    # Binance (perp)
     BINANCE_API_KEY     = os.getenv("BINANCE_API_KEY", "")
     BINANCE_API_SECRET  = os.getenv("BINANCE_API_SECRET", "")
-    # Bitget (perp)
     BITGET_API_KEY      = os.getenv("BITGET_API_KEY", "")
     BITGET_API_SECRET   = os.getenv("BITGET_API_SECRET", "")
     BITGET_PASSPHRASE   = os.getenv("BITGET_PASSPHRASE", "")
-    # OKX (perp)
     OKX_API_KEY         = os.getenv("OKX_API_KEY", "")
     OKX_API_SECRET      = os.getenv("OKX_API_SECRET", "")
     OKX_PASSPHRASE      = os.getenv("OKX_PASSPHRASE", "")
@@ -49,38 +46,33 @@ class Config:
     MAX_POSITIONS       = int(os.getenv("MAX_POSITIONS", "3"))
     CHECK_INTERVAL      = int(os.getenv("CHECK_INTERVAL", "3600"))
 
-    # Formato perp: SYMBOL/USDT:USDT
     SYMBOLS = [
-    # actuales
-    "BTC/USDT:USDT",
-    "ETH/USDT:USDT",
-    "SOL/USDT:USDT",
-    "BNB/USDT:USDT",
-    "XRP/USDT:USDT",
-    "DOGE/USDT:USDT",
-    "AVAX/USDT:USDT",
-    "LINK/USDT:USDT",
-    # nuevos
-    "OP/USDT:USDT",
-    "ARB/USDT:USDT",
-    "SUI/USDT:USDT",
-    "TON/USDT:USDT",
-    "INJ/USDT:USDT",
-    "NEAR/USDT:USDT",
-]
+        "BTC/USDT:USDT",
+        "ETH/USDT:USDT",
+        "SOL/USDT:USDT",
+        "BNB/USDT:USDT",
+        "XRP/USDT:USDT",
+        "DOGE/USDT:USDT",
+        "AVAX/USDT:USDT",
+        "LINK/USDT:USDT",
+        "OP/USDT:USDT",
+        "ARB/USDT:USDT",
+        "SUI/USDT:USDT",
+        "TON/USDT:USDT",
+        "INJ/USDT:USDT",
+        "NEAR/USDT:USDT",
+    ]
 
-    # Símbolo spot equivalente (para compra y precio)
     @staticmethod
     def spot_symbol(sym: str) -> str:
-        return sym.split(":")[0]  # BTC/USDT:USDT → BTC/USDT
+        return sym.split(":")[0]
 
 
 # ─── Exchange clients ─────────────────────────────────────────────────────────
 def init_exchanges() -> dict:
-    """Inicializa todos los clientes. Devuelve dict con nombre → cliente."""
     clients = {}
 
-    # Bybit spot (para comprar el activo)
+    # Bybit spot — para ejecutar compras (modo real)
     clients["bybit_spot"] = ccxt.bybit({
         "apiKey": Config.BYBIT_API_KEY,
         "secret": Config.BYBIT_API_SECRET,
@@ -88,7 +80,7 @@ def init_exchanges() -> dict:
         "options": {"defaultType": "spot"},
     })
 
-    # Bybit perp
+    # Bybit perp — rates públicos + órdenes en modo real
     clients["bybit"] = ccxt.bybit({
         "apiKey": Config.BYBIT_API_KEY,
         "secret": Config.BYBIT_API_SECRET,
@@ -96,7 +88,7 @@ def init_exchanges() -> dict:
         "options": {"defaultType": "linear"},
     })
 
-    # Binance perp (solo si tiene keys)
+    # Binance perp (opcional)
     if Config.BINANCE_API_KEY:
         clients["binance"] = ccxt.binance({
             "apiKey": Config.BINANCE_API_KEY,
@@ -104,8 +96,14 @@ def init_exchanges() -> dict:
             "enableRateLimit": True,
             "options": {"defaultType": "future"},
         })
+    else:
+        # Rates públicos sin key
+        clients["binance"] = ccxt.binance({
+            "enableRateLimit": True,
+            "options": {"defaultType": "future"},
+        })
 
-    # Bitget perp (solo si tiene keys)
+    # Bitget perp (opcional)
     if Config.BITGET_API_KEY:
         clients["bitget"] = ccxt.bitget({
             "apiKey": Config.BITGET_API_KEY,
@@ -114,8 +112,13 @@ def init_exchanges() -> dict:
             "enableRateLimit": True,
             "options": {"defaultType": "swap"},
         })
+    else:
+        clients["bitget"] = ccxt.bitget({
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        })
 
-    # OKX perp (solo si tiene keys)
+    # OKX perp (opcional)
     if Config.OKX_API_KEY:
         clients["okx"] = ccxt.okx({
             "apiKey": Config.OKX_API_KEY,
@@ -124,15 +127,19 @@ def init_exchanges() -> dict:
             "enableRateLimit": True,
             "options": {"defaultType": "swap"},
         })
+    else:
+        clients["okx"] = ccxt.okx({
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        })
 
-    enabled = [k for k in clients if k != "bybit_spot"]
-    log.info(f"Exchanges activos para perp: {enabled}")
+    mode = "PAPER TRADING" if Config.PAPER_TRADING else "REAL MONEY"
+    log.info(f"Exchanges inicializados | Modo: {mode}")
     return clients
 
 
 # ─── Funding rate fetcher ─────────────────────────────────────────────────────
 def fetch_rates_from(name: str, client) -> dict:
-    """Obtiene funding rates de un exchange. Devuelve {symbol: rate%}."""
     rates = {}
     for symbol in Config.SYMBOLS:
         try:
@@ -141,15 +148,11 @@ def fetch_rates_from(name: str, client) -> dict:
             if rate is not None:
                 rates[symbol] = float(rate) * 100
         except Exception as e:
-            log.debug(f"  [{name}] {symbol}: {e}")
+            log.debug(f"[{name}] {symbol}: {e}")
     return rates
 
 
 def get_all_funding_rates(clients: dict) -> dict:
-    """
-    Consulta todos los exchanges perp y devuelve:
-    {symbol: {"best_rate": float, "best_exchange": str, "rates": {exchange: rate}}}
-    """
     perp_clients = {k: v for k, v in clients.items() if k != "bybit_spot"}
     all_rates = {}
 
@@ -161,7 +164,6 @@ def get_all_funding_rates(clients: dict) -> dict:
                 all_rates[symbol] = {"rates": {}}
             all_rates[symbol]["rates"][name] = rate
 
-    # Para cada símbolo, determinar el mejor exchange (mayor rate)
     result = {}
     for symbol, data in all_rates.items():
         rates = data["rates"]
@@ -218,7 +220,9 @@ class PositionManager:
     def update_funding(self, symbol: str, earned: float):
         pos = self.get(symbol)
         if pos:
-            pos["funding_collected"] = round(pos.get("funding_collected", 0) + earned, 6)
+            pos["funding_collected"] = round(
+                pos.get("funding_collected", 0) + earned, 6
+            )
             self._save()
 
 
@@ -290,8 +294,6 @@ class FundingBot:
         self.clients = init_exchanges()
         self.pm = PositionManager()
         self.tl = TradeLogger()
-        mode = "PAPER TRADING" if Config.PAPER_TRADING else "REAL MONEY"
-        log.info(f"Bot iniciado — Modo: {mode}")
         log.info(f"Capital/trade: ${Config.CAPITAL_PER_TRADE} | Rate mínimo: {Config.MIN_FUNDING_RATE}% | Max pos: {Config.MAX_POSITIONS}")
 
     def get_spot_price(self, symbol: str) -> float:
@@ -316,10 +318,9 @@ class FundingBot:
                 log.info(f"[PAPER] Perp SHORT {symbol}: {amount:.6f} @ ${spot_price:.2f} → {perp_exchange}")
             else:
                 self.clients["bybit_spot"].create_market_buy_order(spot_sym, amount)
-                log.info(f"[REAL] Spot BUY ejecutado: {spot_sym} {amount:.6f} en Bybit")
-
+                log.info(f"[REAL] Spot BUY: {spot_sym} {amount:.6f} en Bybit")
                 self.clients[perp_exchange].create_market_sell_order(symbol, amount)
-                log.info(f"[REAL] Perp SHORT ejecutado: {symbol} {amount:.6f} en {perp_exchange}")
+                log.info(f"[REAL] Perp SHORT: {symbol} {amount:.6f} en {perp_exchange}")
 
             position = {
                 "symbol": symbol,
@@ -354,18 +355,20 @@ class FundingBot:
                 log.info(f"[PAPER] Spot SELL {pos['spot_symbol']}: {pos['amount']:.6f} → Bybit")
                 log.info(f"[PAPER] Perp CLOSE {symbol}: {pos['amount']:.6f} → {perp_ex}")
             else:
-                self.clients["bybit_spot"].create_market_sell_order(pos["spot_symbol"], pos["amount"])
-                log.info(f"[REAL] Spot SELL ejecutado: {pos['spot_symbol']}")
-
+                self.clients["bybit_spot"].create_market_sell_order(
+                    pos["spot_symbol"], pos["amount"]
+                )
                 self.clients[perp_ex].create_market_buy_order(symbol, pos["amount"])
-                log.info(f"[REAL] Perp CLOSE ejecutado: {symbol} en {perp_ex}")
 
             fees = Config.CAPITAL_PER_TRADE * 0.002
             pnl_net = pos["funding_collected"] - fees
-
             self.tl.log_close(symbol, pos["funding_collected"], pnl_net)
             self.pm.remove(symbol)
-            log.info(f"Posición cerrada: {symbol} | Funding: ${pos['funding_collected']:.4f} | PnL: ${pnl_net:.4f} | Razón: {reason}")
+            log.info(
+                f"Posición cerrada: {symbol} | "
+                f"Funding: ${pos['funding_collected']:.4f} | "
+                f"PnL: ${pnl_net:.4f} | Razón: {reason}"
+            )
 
         except Exception as e:
             log.error(f"Error al cerrar posición {symbol}: {e}")
@@ -380,9 +383,8 @@ class FundingBot:
             log.warning("No se pudieron obtener funding rates, reintentando en el próximo ciclo.")
             return
 
-        # Tabla de rates
         exchanges = [k for k in self.clients if k != "bybit_spot"]
-        header = f"{'Par':<16}" + "".join(f"{ex:>10}" for ex in exchanges) + f"{'Mejor':>10}  Estado"
+        header = f"{'Par':<18}" + "".join(f"{ex:>10}" for ex in exchanges) + f"{'Mejor':>10}  Estado"
         log.info(header)
         log.info("-" * 70)
 
@@ -392,16 +394,16 @@ class FundingBot:
             data = all_rates.get(symbol)
             if not data:
                 continue
-
             rates_str = "".join(
                 f"{data['rates'].get(ex, 0):>9.4f}%" for ex in exchanges
             )
             best_rate = data["best_rate"]
-            best_ex   = data["best_exchange"]
-            already   = symbol in self.pm.symbols()
-            status    = "ABIERTA" if already else ("✓ OPORTUNIDAD" if best_rate >= Config.MIN_FUNDING_RATE else "—")
-
-            log.info(f"{symbol:<16}{rates_str}  {best_rate:>8.4f}%  {status} [{best_ex}]")
+            best_ex = data["best_exchange"]
+            already = symbol in self.pm.symbols()
+            status = "ABIERTA" if already else (
+                "✓ OPORTUNIDAD" if best_rate >= Config.MIN_FUNDING_RATE else "—"
+            )
+            log.info(f"{symbol:<18}{rates_str}  {best_rate:>8.4f}%  {status} [{best_ex}]")
 
             if best_rate >= Config.MIN_FUNDING_RATE and not already:
                 opportunities.append((symbol, best_rate, best_ex))
@@ -418,19 +420,18 @@ class FundingBot:
             if rate > 0:
                 earned = pos["capital"] * (rate / 100)
                 self.pm.update_funding(sym, earned)
-                log.info(f"Funding cobrado {sym}: +${earned:.4f} en {perp_ex} ({rate:.4f}%)")
+                log.info(f"Funding cobrado {sym}: +${earned:.4f} ({rate:.4f}% en {perp_ex})")
             elif rate < 0:
-                log.warning(f"{sym}: rate negativo en {perp_ex} ({rate:.4f}%), cerrando.")
+                log.warning(f"{sym}: rate negativo ({rate:.4f}%), cerrando.")
                 self.close_position(sym, reason="rate_negativo")
 
-        # Abrir nuevas oportunidades (mejor rate primero)
+        # Abrir nuevas oportunidades
         opportunities.sort(key=lambda x: x[1], reverse=True)
         for sym, rate, best_ex in opportunities:
             if self.pm.count() < Config.MAX_POSITIONS:
                 log.info(f"Abriendo: {sym} | Rate: {rate:.4f}% | Perp: {best_ex}")
                 self.open_position(sym, rate, best_ex)
 
-        # Resumen
         summary = self.tl.summary()
         log.info("─" * 65)
         log.info(
@@ -442,7 +443,8 @@ class FundingBot:
 
     def run(self):
         log.info("=" * 65)
-        log.info("  FUNDING RATE BOT — Bybit spot + Bybit/Binance/Bitget/OKX perp")
+        log.info("  FUNDING RATE BOT — Bybit/Binance/Bitget/OKX")
+        log.info(f"  Modo: {'PAPER TRADING' if Config.PAPER_TRADING else 'REAL MONEY'}")
         log.info("=" * 65)
 
         while True:
