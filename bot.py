@@ -212,16 +212,19 @@ def fetch_rates_from(name, client):
             if rate is not None:
                 rates[symbol] = float(rate) * 100
         except Exception as e:
-            log.debug(f"[{name}] {symbol}: {e}")
+            log.warning(f"[{name}] {symbol}: {str(e)[:120]}")
     return rates
 
 
 def get_all_rates(clients):
     perp = {k: v for k, v in clients.items() if k != "bybit_spot"}
     raw  = {}
+    log.info(f"Consultando rates de: {list(perp.keys())}")
     for name, client in perp.items():
         r = fetch_rates_from(name, client)
         log.info(f"[{name}] {len(r)} rates obtenidos")
+        if not r:
+            log.warning(f"[{name}] SIN RATES — exchange bloqueado o error de conexion")
         for sym, rate in r.items():
             raw.setdefault(sym, {})[name] = rate
 
@@ -482,7 +485,7 @@ class FundingBot:
 
         all_rates = get_all_rates(self.clients)
         if not all_rates:
-            log.warning("Sin rates disponibles, reintentando.")
+            log.warning("SIN RATES de ningun exchange — verificar conectividad o bloqueo geografico")
             return
 
         perp_exs = [k for k in self.clients if k != "bybit_spot"]
