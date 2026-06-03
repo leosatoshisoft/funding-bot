@@ -84,7 +84,7 @@ body{background:var(--bg);color:var(--t);font-family:system-ui,sans-serif;font-s
 .container{max-width:1250px;margin:0 auto;padding:24px}
 
 /* Auth cards */
-.auth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:24px}
+.auth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:24px}
 .auth-card{background:var(--s);border:1px solid var(--b);border-radius:12px;padding:18px}
 .auth-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
 .auth-name{font-size:15px;font-weight:600}
@@ -196,8 +196,8 @@ async function loadAuth(){
   const d=await fetchJson('/api/auth');
   if(!d){return;}
   const grid=document.getElementById('auth-grid');
-  const exchanges=['okx','bitget'];
-  const labels={okx:'OKX',bitget:'Bitget'};
+  const exchanges=['bybit','okx','bitget'];
+  const labels={bybit:'Bybit',okx:'OKX',bitget:'Bitget'};
 
   grid.innerHTML=exchanges.map(ex=>{
     const info=d[ex];
