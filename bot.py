@@ -1,9 +1,7 @@
 """
 Funding Rate Arbitrage Bot
-Spread inter-exchange: long perp en A + short perp en B
-Bybit demo: api-demo.bybit.com
-Bitget demo: api-sandbox.bitget.com  
-OKX demo: header x-simulated-trading: 1
+- Rates: clientes publicos sin key (sin bloqueos de demo)
+- Ordenes: clientes autenticados demo/real
 """
 
 import os
@@ -66,84 +64,100 @@ class Config:
     def spot_symbol(sym):
         return sym.split(":")[0]
 
-    @staticmethod
-    def mode(name):
-        m = {
-            "bybit":   (Config.BYBIT_API_KEY,   Config.BYBIT_DEMO),
-            "binance": (Config.BINANCE_API_KEY,  False),
-            "bitget":  (Config.BITGET_API_KEY,   Config.BITGET_DEMO),
-            "okx":     (Config.OKX_API_KEY,      Config.OKX_DEMO),
-        }
-        key, demo = m.get(name, ("", False))
-        if not key: return "public"
-        return "demo" if demo else "real"
-
 
 # ─── Exchange clients ─────────────────────────────────────────────────────────
 def init_exchanges():
-    clients = {}
+    """
+    Devuelve dos dicts:
+    - rate_clients: sin autenticacion, para consultar funding rates publicos
+    - trade_clients: autenticados demo/real, para ejecutar ordenes
+    """
+    rate_clients  = {}
+    trade_clients = {}
 
     # ── Bybit ─────────────────────────────────────────────────────────────────
-    # Demo usa endpoint separado: api-demo.bybit.com
-    bybit_cfg = {"enableRateLimit": True, "options": {"defaultType": "linear"}}
+    # Rates: cliente publico (endpoint real, sin key)
+    rate_clients["bybit"] = ccxt.bybit({
+        "enableRateLimit": True,
+        "options": {"defaultType": "linear"},
+    })
+    # Ordenes: cliente demo con endpoint correcto
     if Config.BYBIT_API_KEY:
-        bybit_cfg["apiKey"] = Config.BYBIT_API_KEY
-        bybit_cfg["secret"] = Config.BYBIT_API_SECRET
+        bybit_trade = {
+            "apiKey": Config.BYBIT_API_KEY,
+            "secret": Config.BYBIT_API_SECRET,
+            "enableRateLimit": True,
+            "options": {"defaultType": "linear"},
+        }
         if Config.BYBIT_DEMO:
-            bybit_cfg["hostname"] = "api-demo.bybit.com"
-    clients["bybit"] = ccxt.bybit(dict(bybit_cfg))
-    bybit_spot = dict(bybit_cfg)
-    bybit_spot["options"] = dict(bybit_cfg["options"])
-    bybit_spot["options"]["defaultType"] = "spot"
-    clients["bybit_spot"] = ccxt.bybit(bybit_spot)
-    log.info(f"Bybit: {Config.mode('bybit')}")
+            # Endpoint demo correcto de Bybit
+            bybit_trade["urls"] = {
+                "api": {
+                    "public":  "https://api-demo.bybit.com",
+                    "private": "https://api-demo.bybit.com",
+                }
+            }
+        trade_clients["bybit"] = ccxt.bybit(bybit_trade)
+        # Cliente spot para compras
+        bybit_spot = dict(bybit_trade)
+        bybit_spot["options"] = {"defaultType": "spot"}
+        trade_clients["bybit_spot"] = ccxt.bybit(bybit_spot)
+    log.info(f"Bybit rates: publico | trade: {'demo' if Config.BYBIT_DEMO else 'real' if Config.BYBIT_API_KEY else 'sin key'}")
 
     # ── Binance ────────────────────────────────────────────────────────────────
-    clients["binance"] = ccxt.binance({
+    rate_clients["binance"] = ccxt.binance({
         "enableRateLimit": True,
         "options": {"defaultType": "future"},
     })
-    log.info("Binance: public")
+    log.info("Binance: solo rates publicos")
 
     # ── Bitget ────────────────────────────────────────────────────────────────
-    # Demo usa endpoint: api-sandbox.bitget.com
-    bitget_cfg = {"enableRateLimit": True, "options": {"defaultType": "swap"}}
+    rate_clients["bitget"] = ccxt.bitget({
+        "enableRateLimit": True,
+        "options": {"defaultType": "swap"},
+    })
     if Config.BITGET_API_KEY:
-        bitget_cfg["apiKey"]   = Config.BITGET_API_KEY
-        bitget_cfg["secret"]   = Config.BITGET_API_SECRET
-        bitget_cfg["password"] = Config.BITGET_PASSPHRASE
+        bitget_trade = {
+            "apiKey":   Config.BITGET_API_KEY,
+            "secret":   Config.BITGET_API_SECRET,
+            "password": Config.BITGET_PASSPHRASE,
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        }
         if Config.BITGET_DEMO:
-            bitget_cfg["hostname"] = "api-sandbox.bitget.com"
-    clients["bitget"] = ccxt.bitget(bitget_cfg)
-    log.info(f"Bitget: {Config.mode('bitget')}")
+            bitget_trade["urls"] = {"api": "https://api-sandbox.bitget.com"}
+        trade_clients["bitget"] = ccxt.bitget(bitget_trade)
+    log.info(f"Bitget rates: publico | trade: {'demo' if Config.BITGET_DEMO else 'real' if Config.BITGET_API_KEY else 'sin key'}")
 
     # ── OKX ────────────────────────────────────────────────────────────────────
-    # Demo usa mismo endpoint con header x-simulated-trading: 1
-    okx_cfg = {"enableRateLimit": True, "options": {"defaultType": "swap"}}
+    # Rates: SIEMPRE publico sin key (demo bloquea fetch_funding_rate)
+    rate_clients["okx"] = ccxt.okx({
+        "enableRateLimit": True,
+        "options": {"defaultType": "swap"},
+    })
     if Config.OKX_API_KEY:
-        okx_cfg["apiKey"]   = Config.OKX_API_KEY
-        okx_cfg["secret"]   = Config.OKX_API_SECRET
-        okx_cfg["password"] = Config.OKX_PASSPHRASE
+        okx_trade = {
+            "apiKey":   Config.OKX_API_KEY,
+            "secret":   Config.OKX_API_SECRET,
+            "password": Config.OKX_PASSPHRASE,
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        }
         if Config.OKX_DEMO:
-            okx_cfg["headers"] = {"x-simulated-trading": "1"}
-    clients["okx"] = ccxt.okx(okx_cfg)
-    log.info(f"OKX: {Config.mode('okx')}")
+            okx_trade["headers"] = {"x-simulated-trading": "1"}
+        trade_clients["okx"] = ccxt.okx(okx_trade)
+    log.info(f"OKX rates: publico | trade: {'demo' if Config.OKX_DEMO else 'real' if Config.OKX_API_KEY else 'sin key'}")
 
-    return clients
+    return rate_clients, trade_clients
 
 
 # ─── Auth checker ─────────────────────────────────────────────────────────────
-DEMO_CODES = ["50038", "40099", "unavailable", "environment", "demo", "paper",
-              "simulated", "sandbox"]
+DEMO_CODES = ["50038", "40099", "unavailable", "environment", "demo", "paper", "simulated"]
 
 def _is_demo_limit(err):
     return any(c in err.lower() for c in DEMO_CODES)
 
-def check_auth(clients):
-    """
-    Verifica conexion de Bybit, OKX, Bitget.
-    En demo el balance no siempre esta disponible — lo maneja gracefully.
-    """
+def check_auth(trade_clients):
     cfg = {
         "bybit":  (Config.BYBIT_API_KEY,  Config.BYBIT_DEMO),
         "okx":    (Config.OKX_API_KEY,    Config.OKX_DEMO),
@@ -152,48 +166,34 @@ def check_auth(clients):
     results = {}
     for name, (key, is_demo) in cfg.items():
         if not key:
-            results[name] = {
-                "status": "no_key", "free": None, "total": None,
-                "error": None, "demo": is_demo, "note": None,
-            }
+            results[name] = {"status": "no_key", "free": None, "total": None,
+                             "error": None, "demo": is_demo, "note": None}
             continue
-
-        client = clients.get(name)
+        client = trade_clients.get(name)
+        if not client:
+            results[name] = {"status": "no_key", "free": None, "total": None,
+                             "error": None, "demo": is_demo, "note": None}
+            continue
         try:
             balance = client.fetch_balance()
             usdt  = balance.get("USDT", {})
             free  = float(usdt.get("free",  0))
             total = float(usdt.get("total", 0))
-            results[name] = {
-                "status": "ok", "free": round(free, 2), "total": round(total, 2),
-                "error": None, "demo": is_demo, "note": None,
-            }
+            results[name] = {"status": "ok", "free": round(free, 2),
+                             "total": round(total, 2), "error": None,
+                             "demo": is_demo, "note": None}
             log.info(f"[{name}] Auth OK | USDT: ${free:.2f} libre / ${total:.2f} total")
-
         except Exception as e:
             err = str(e)
             if is_demo and _is_demo_limit(err):
-                # Key correcta pero balance no disponible en esta cuenta demo
-                results[name] = {
-                    "status": "ok", "free": None, "total": None,
-                    "error": None, "demo": True,
-                    "note": "Cuenta demo activa (balance no disponible via API)",
-                }
+                results[name] = {"status": "ok", "free": None, "total": None,
+                                 "error": None, "demo": True,
+                                 "note": "Cuenta demo activa"}
                 log.info(f"[{name}] Auth OK (demo)")
-            elif any(x in err for x in ["10003", "invalid", "mismatch", "environment"]):
-                results[name] = {
-                    "status": "error", "free": None, "total": None,
-                    "error": f"Key invalida o endpoint incorrecto — asegurate de usar keys de cuenta DEMO",
-                    "demo": is_demo, "note": None,
-                }
-                log.error(f"[{name}] Key invalida: {err[:80]}")
             else:
-                results[name] = {
-                    "status": "error", "free": None, "total": None,
-                    "error": err[:150], "demo": is_demo, "note": None,
-                }
+                results[name] = {"status": "error", "free": None, "total": None,
+                                 "error": err[:150], "demo": is_demo, "note": None}
                 log.error(f"[{name}] Auth FAILED: {err[:80]}")
-
     return results
 
 
@@ -202,7 +202,7 @@ def save_auth_status(status):
         json.dump({**status, "checked_at": datetime.utcnow().isoformat()}, f, indent=2)
 
 
-# ─── Funding rate fetcher ─────────────────────────────────────────────────────
+# ─── Funding rate fetcher (usa rate_clients — publicos) ───────────────────────
 def fetch_rates_from(name, client):
     rates = {}
     for symbol in Config.SYMBOLS:
@@ -212,19 +212,18 @@ def fetch_rates_from(name, client):
             if rate is not None:
                 rates[symbol] = float(rate) * 100
         except Exception as e:
-            log.warning(f"[{name}] {symbol}: {str(e)[:120]}")
+            log.debug(f"[{name}] {symbol}: {str(e)[:80]}")
     return rates
 
 
-def get_all_rates(clients):
-    perp = {k: v for k, v in clients.items() if k != "bybit_spot"}
-    raw  = {}
-    log.info(f"Consultando rates de: {list(perp.keys())}")
-    for name, client in perp.items():
+def get_all_rates(rate_clients):
+    raw = {}
+    log.info(f"Consultando rates de: {list(rate_clients.keys())}")
+    for name, client in rate_clients.items():
         r = fetch_rates_from(name, client)
         log.info(f"[{name}] {len(r)} rates obtenidos")
         if not r:
-            log.warning(f"[{name}] SIN RATES — exchange bloqueado o error de conexion")
+            log.warning(f"[{name}] SIN RATES")
         for sym, rate in r.items():
             raw.setdefault(sym, {})[name] = rate
 
@@ -257,14 +256,8 @@ def get_all_rates(clients):
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-def can_trade(exchange):
-    return bool({
-        "bybit":   Config.BYBIT_API_KEY,
-        "binance": Config.BINANCE_API_KEY,
-        "bitget":  Config.BITGET_API_KEY,
-        "okx":     Config.OKX_API_KEY,
-    }.get(exchange, ""))
-
+def can_trade(exchange, trade_clients):
+    return exchange in trade_clients
 
 def hours_since(iso):
     dt  = datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)
@@ -293,11 +286,9 @@ class PositionManager:
         self._save()
 
     def remove(self, uid):
-        for i, p in enumerate(self.positions):
-            if p["id"] == uid:
-                self.positions.pop(i)
-                self._save()
-                return
+        self.positions = [p for p in self.positions if p["id"] != uid]
+        self._save()
+
     def get_by_symbol(self, symbol):
         return [p for p in self.positions if p["symbol"] == symbol]
 
@@ -360,35 +351,35 @@ class TradeLogger:
         self._save()
 
     def summary(self):
-        closed   = [t for t in self.trades if t.get("status") == "closed"]
-        open_t   = [t for t in self.trades if t.get("status") == "open"]
-        pnl      = sum(t.get("pnl_net") or 0 for t in closed)
-        fund_cl  = sum(t.get("funding_collected", 0) for t in closed)
-        fund_op  = sum(t.get("funding_collected", 0) for t in open_t)
-        win      = [t for t in closed if (t.get("pnl_net") or 0) > 0]
+        closed  = [t for t in self.trades if t.get("status") == "closed"]
+        open_t  = [t for t in self.trades if t.get("status") == "open"]
+        pnl     = sum(t.get("pnl_net") or 0 for t in closed)
+        fund_cl = sum(t.get("funding_collected", 0) for t in closed)
+        fund_op = sum(t.get("funding_collected", 0) for t in open_t)
+        win     = [t for t in closed if (t.get("pnl_net") or 0) > 0]
         return {
-            "total_trades":     len(closed),
-            "total_pnl":        round(pnl, 4),
-            "total_funding":    round(fund_cl + fund_op, 4),
-            "open_positions":   len(open_t),
-            "win_rate":         round(len(win) / len(closed) * 100, 1) if closed else 0,
-            "spread_trades":    len([t for t in closed if t.get("strategy") == "spread"]),
+            "total_trades":   len(closed),
+            "total_pnl":      round(pnl, 4),
+            "total_funding":  round(fund_cl + fund_op, 4),
+            "open_positions": len(open_t),
+            "win_rate":       round(len(win) / len(closed) * 100, 1) if closed else 0,
+            "spread_trades":  len([t for t in closed if t.get("strategy") == "spread"]),
         }
 
 
 # ─── Core bot ─────────────────────────────────────────────────────────────────
 class FundingBot:
     def __init__(self):
-        self.clients = init_exchanges()
-        self.pm      = PositionManager()
-        self.tl      = TradeLogger()
+        self.rate_clients, self.trade_clients = init_exchanges()
+        self.pm = PositionManager()
+        self.tl = TradeLogger()
 
         log.info("Verificando autenticacion...")
-        auth = check_auth(self.clients)
+        auth = check_auth(self.trade_clients)
         save_auth_status(auth)
 
-        tradeable = [ex for ex in ["bybit","binance","bitget","okx"] if can_trade(ex)]
-        log.info(f"Exchanges con key: {tradeable or ['ninguno']}")
+        tradeable = list(self.trade_clients.keys())
+        log.info(f"Trade clients activos: {tradeable}")
         log.info(f"PAPER_TRADING: {Config.PAPER_TRADING}")
         log.info(f"Capital/trade: ${Config.CAPITAL_PER_TRADE} | Spread min: {Config.MIN_SPREAD}% | Max pos: {Config.MAX_POSITIONS}")
 
@@ -412,18 +403,18 @@ class FundingBot:
         if self.pm.get_by_symbol(symbol) or self.pm.count() >= Config.MAX_POSITIONS:
             return
 
-        # En paper no necesitamos key. En demo/real sí.
         if not Config.PAPER_TRADING:
-            if not can_trade(long_ex) or not can_trade(short_ex):
-                log.info(f"[spread] Skip {symbol}: {long_ex}/{short_ex} sin key")
+            if not can_trade(long_ex, self.trade_clients) or \
+               not can_trade(short_ex, self.trade_clients):
+                log.warning(f"[spread] Skip {symbol}: {long_ex}/{short_ex} sin trade client")
                 return
 
         uid  = self._uid(symbol, "spread")
         mode = self._position_mode(long_ex, short_ex)
 
         try:
-            # Precio de referencia via cliente público
-            ref = self.clients.get(long_ex, self.clients["bybit"])
+            # Precio via cliente de rates (publico, siempre disponible)
+            ref    = self.rate_clients.get(long_ex, list(self.rate_clients.values())[0])
             ticker = ref.fetch_ticker(Config.spot_symbol(symbol))
             price  = float(ticker["last"])
             amount = Config.CAPITAL_PER_TRADE / price
@@ -432,9 +423,9 @@ class FundingBot:
                 log.info(f"[PAPER] LONG  {symbol} → {long_ex}")
                 log.info(f"[PAPER] SHORT {symbol} → {short_ex} | Spread: {spread:.4f}%")
             else:
-                self.clients[long_ex].create_market_buy_order(symbol, amount)
-                self.clients[short_ex].create_market_sell_order(symbol, amount)
-                log.info(f"[{mode.upper()}] Ordenes ejecutadas: LONG {long_ex} / SHORT {short_ex}")
+                self.trade_clients[long_ex].create_market_buy_order(symbol, amount)
+                self.trade_clients[short_ex].create_market_sell_order(symbol, amount)
+                log.info(f"[{mode.upper()}] LONG {long_ex} / SHORT {short_ex} ejecutado")
 
             pos = {
                 "id": uid, "symbol": symbol,
@@ -458,9 +449,9 @@ class FundingBot:
     def close_position(self, pos, reason="manual"):
         try:
             if not Config.PAPER_TRADING:
-                self.clients[pos["long_exchange"]].create_market_sell_order(
+                self.trade_clients[pos["long_exchange"]].create_market_sell_order(
                     pos["symbol"], pos["amount"])
-                self.clients[pos["short_exchange"]].create_market_buy_order(
+                self.trade_clients[pos["short_exchange"]].create_market_buy_order(
                     pos["symbol"], pos["amount"])
             fees = Config.CAPITAL_PER_TRADE * 0.002
             pnl  = pos["funding_collected"] - fees
@@ -480,16 +471,16 @@ class FundingBot:
         log.info("=" * 70)
         log.info("Iniciando ciclo...")
 
-        auth = check_auth(self.clients)
+        auth = check_auth(self.trade_clients)
         save_auth_status(auth)
 
-        all_rates = get_all_rates(self.clients)
+        all_rates = get_all_rates(self.rate_clients)
         if not all_rates:
-            log.warning("SIN RATES de ningun exchange — verificar conectividad o bloqueo geografico")
+            log.warning("SIN RATES de ningun exchange")
             return
 
-        perp_exs = [k for k in self.clients if k != "bybit_spot"]
-        log.info(f"{'Par':<18}" + "".join(f"{e:>10}" for e in perp_exs) + "   Spread  Estado")
+        rate_exs = list(self.rate_clients.keys())
+        log.info(f"{'Par':<18}" + "".join(f"{e:>10}" for e in rate_exs) + "   Spread  Estado")
         log.info("-" * 80)
 
         spread_opps = []
@@ -498,21 +489,32 @@ class FundingBot:
             data = all_rates.get(sym)
             if not data:
                 continue
-            rates_str   = "".join(f"{data['rates'].get(e, 0):>9.4f}%" for e in perp_exs)
+            rates_str   = "".join(f"{data['rates'].get(e, 0):>9.4f}%" for e in rate_exs)
             best_spread = data["best_spread"]
             has_pos     = bool(self.pm.get_by_symbol(sym))
+
             if has_pos:
                 status = "ABIERTA"
             elif best_spread >= Config.MIN_SPREAD:
-                status = f"SPREAD {data['spread_long']}→{data['spread_short']}"
+                lo, sh = data["spread_long"], data["spread_short"]
+                # Verificar que ambos exchanges tengan trade client
+                if Config.PAPER_TRADING or \
+                   (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients)):
+                    status = f"SPREAD {lo}→{sh}"
+                else:
+                    status = f"sin key ({lo}/{sh})"
             else:
                 status = "—"
+
             log.info(f"{sym:<18}{rates_str}  {best_spread:>7.4f}%  {status}")
 
             if not has_pos and best_spread >= Config.MIN_SPREAD:
-                spread_opps.append((sym, best_spread, data["spread_long"], data["spread_short"]))
+                lo, sh = data["spread_long"], data["spread_short"]
+                if Config.PAPER_TRADING or \
+                   (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients)):
+                    spread_opps.append((sym, best_spread, lo, sh))
 
-        # Actualizar funding posiciones abiertas
+        # Actualizar funding
         for pos in list(self.pm.positions):
             data = all_rates.get(pos["symbol"])
             if not data:
@@ -529,11 +531,10 @@ class FundingBot:
 
         self.tl.sync_open_funding(self.pm.positions)
 
-        # Abrir oportunidades (mejor spread primero)
         spread_opps.sort(key=lambda x: x[1], reverse=True)
-        for sym, spread, long_ex, short_ex in spread_opps:
+        for sym, spread, lo, sh in spread_opps:
             if self.pm.count() < Config.MAX_POSITIONS:
-                self.open_spread(sym, spread, long_ex, short_ex)
+                self.open_spread(sym, spread, lo, sh)
 
         summary = self.tl.summary()
         log.info("─" * 70)
