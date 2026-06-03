@@ -116,9 +116,11 @@ def init_exchanges() -> dict:
             "options": {"defaultType": "swap"},
         }
         if Config.OKX_DEMO:
-            okx_cfg["sandbox"] = True  # OKX testnet
+            # OKX demo: mismo endpoint pero con header x-simulated-trading: 1
+            # sandbox=True apunta a un endpoint inexistente, NO usar
+            okx_cfg["headers"] = {"x-simulated-trading": "1"}
         clients["okx"] = ccxt.okx(okx_cfg)
-        log.info(f"OKX: {'DEMO' if Config.OKX_DEMO else 'REAL'}")
+        log.info(f"OKX: DEMO (x-simulated-trading)" if Config.OKX_DEMO else "OKX: REAL")
     else:
         clients["okx"] = ccxt.okx({
             "enableRateLimit": True,
