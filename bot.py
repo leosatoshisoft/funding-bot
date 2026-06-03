@@ -82,30 +82,38 @@ def init_exchanges():
     trade_clients = {}
 
     # ── Bybit ─────────────────────────────────────────────────────────────────
-    # Rates: cliente publico (endpoint real, sin key)
+    # Rates: siempre cliente publico sin key (funciona en mainnet)
     rate_clients["bybit"] = ccxt.bybit({
         "enableRateLimit": True,
         "options": {"defaultType": "linear"},
     })
-    # Ordenes: cliente demo con endpoint correcto
+    # Ordenes: pybit oficial para demo, ccxt para real
     if Config.BYBIT_API_KEY:
-        bybit_trade = {
-            "apiKey": Config.BYBIT_API_KEY,
-            "secret": Config.BYBIT_API_SECRET,
-            "enableRateLimit": True,
-            "options": {"defaultType": "linear"},
-        }
-        if Config.BYBIT_DEMO:
-            # Bybit demo usa api.demo.bybit.com
-            # hostname sin prefijo "api." porque ccxt agrega "https://api.{hostname}"
-            bybit_trade["hostname"] = "demo.bybit.com"
-        trade_clients["bybit"] = ccxt.bybit(bybit_trade)
-        # Cliente spot para compras
-        bybit_spot_cfg = dict(bybit_trade)
-        bybit_spot_cfg["options"] = dict(bybit_trade.get("options", {}))
-        bybit_spot_cfg["options"]["defaultType"] = "spot"
-        trade_clients["bybit_spot"] = ccxt.bybit(bybit_spot_cfg)
-    log.info(f"Bybit rates: publico | trade: {'demo' if Config.BYBIT_DEMO else 'real' if Config.BYBIT_API_KEY else 'sin key'}")
+        if Config.BYBIT_DEMO and PYBIT_OK:
+            # Docs oficiales: demo usa https://api-demo.bybit.com
+            # pybit con demo=True lo maneja correctamente sin llamar endpoints no disponibles
+            trade_clients["bybit_pybit"] = PybitHTTP(
+                testnet=False,
+                demo=True,
+                api_key=Config.BYBIT_API_KEY,
+                api_secret=Config.BYBIT_API_SECRET,
+            )
+            log.info(f"Bybit: pybit demo → {trade_clients['bybit_pybit'].endpoint}")
+        else:
+            # Real: usar ccxt normalmente
+            trade_clients["bybit"] = ccxt.bybit({
+                "apiKey": Config.BYBIT_API_KEY,
+                "secret": Config.BYBIT_API_SECRET,
+                "enableRateLimit": True,
+                "options": {"defaultType": "linear"},
+            })
+            trade_clients["bybit_spot"] = ccxt.bybit({
+                "apiKey": Config.BYBIT_API_KEY,
+                "secret": Config.BYBIT_API_SECRET,
+                "enableRateLimit": True,
+                "options": {"defaultType": "spot"},
+            })
+            log.info("Bybit: ccxt real")
 
     # ── Binance ────────────────────────────────────────────────────────────────
     rate_clients["binance"] = ccxt.binance({
@@ -171,6 +179,23 @@ def check_auth(trade_clients):
         if not key:
             results[name] = {"status": "no_key", "free": None, "total": None,
                              "error": None, "demo": is_demo, "note": None}
+            continue
+        # Para Bybit demo usamos pybit
+        if name == "bybit" and is_demo and "bybit_pybit" in trade_clients:
+            try:
+                r = trade_clients["bybit_pybit"].get_wallet_balance(accountType="UNIFIED")
+                coins = r.get("result", {}).get("list", [{}])[0].get("coin", [])
+                usdt = next((c for c in coins if c.get("coin") == "USDT"), {})
+                free  = float(usdt.get("availableToWithdraw", 0) or 0)
+                total = float(usdt.get("walletBalance",       0) or 0)
+                results[name] = {"status": "ok", "free": round(free, 2),
+                                 "total": round(total, 2), "error": None,
+                                 "demo": True, "note": None}
+                log.info(f"[bybit] Auth OK (pybit demo) | USDT: ${free:.2f} libre")
+            except Exception as e:
+                results[name] = {"status": "error", "free": None, "total": None,
+                                 "error": str(e)[:150], "demo": True, "note": None}
+                log.error(f"[bybit] Auth FAILED (pybit): {str(e)[:80]}")
             continue
         client = trade_clients.get(name)
         if not client:
@@ -277,6 +302,9 @@ def get_all_rates(rate_clients):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def can_trade(exchange, trade_clients):
+    if exchange == "bybit":
+        # Bybit puede estar como ccxt ("bybit") o pybit ("bybit_pybit")
+        return "bybit" in trade_clients or "bybit_pybit" in trade_clients
     return exchange in trade_clients
 
 def hours_since(iso):
@@ -420,20 +448,37 @@ class FundingBot:
         return ml if ml == ms else f"{ml}/{ms}"
 
     def _execute_order(self, exchange, symbol, amount, side):
-        """Ejecuta una orden de mercado. Usa pybit para Bybit demo, ccxt para el resto."""
+        """Ejecuta orden de mercado. Bybit demo usa pybit, resto usa ccxt."""
         if exchange == "bybit" and "bybit_pybit" in self.trade_clients:
-            # pybit: símbolo sin el sufijo :USDT, category=linear
-            sym_clean = symbol.replace("/USDT:USDT", "USDT").replace("/", "")
+            # pybit oficial: BTCUSDT (sin / ni :USDT), category=linear
+            sym_clean = symbol.replace("/USDT:USDT", "USDT").replace("/USDT", "USDT").replace("/", "")
+            log.info(f"pybit place_order: {sym_clean} {side} qty={amount:.4f}")
             result = self.trade_clients["bybit_pybit"].place_order(
                 category="linear",
                 symbol=sym_clean,
                 side=side,
                 orderType="Market",
-                qty=str(round(amount, 6)),
+                qty=str(round(amount, 3)),
             )
+            log.info(f"pybit response: retCode={result.get('retCode')} retMsg={result.get('retMsg')}")
             if result.get("retCode") != 0:
-                raise Exception(f"Bybit pybit error: {result.get('retMsg')}")
+                raise Exception(f"Bybit pybit error: {result.get('retMsg')} (code {result.get('retCode')})")
             return result
+        elif exchange == "bitget":
+            # Bitget swap: asegurar que el símbolo sea correcto
+            cl = self.trade_clients["bitget"]
+            sym_bitget = symbol  # ccxt maneja COIN/USDT:USDT para swap
+            if side == "Buy":
+                return cl.create_market_buy_order(sym_bitget, amount, params={"marginMode": "cross"})
+            else:
+                return cl.create_market_sell_order(sym_bitget, amount, params={"marginMode": "cross"})
+        elif exchange == "okx":
+            cl = self.trade_clients["okx"]
+            params = {"tdMode": "cross"}
+            if side == "Buy":
+                return cl.create_market_buy_order(symbol, amount, params=params)
+            else:
+                return cl.create_market_sell_order(symbol, amount, params=params)
         else:
             cl = self.trade_clients[exchange]
             if side == "Buy":
