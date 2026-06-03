@@ -90,17 +90,15 @@ def init_exchanges():
             "options": {"defaultType": "linear"},
         }
         if Config.BYBIT_DEMO:
-            # ccxt Bybit demo: usar set_sandbox_mode despues de crear el cliente
-            pass
+            # Bybit demo usa api.demo.bybit.com
+            # hostname sin prefijo "api." porque ccxt agrega "https://api.{hostname}"
+            bybit_trade["hostname"] = "demo.bybit.com"
         trade_clients["bybit"] = ccxt.bybit(bybit_trade)
-        if Config.BYBIT_DEMO:
-            trade_clients["bybit"].set_sandbox_mode(True)
         # Cliente spot para compras
         bybit_spot_cfg = dict(bybit_trade)
-        bybit_spot_cfg["options"] = {"defaultType": "spot"}
+        bybit_spot_cfg["options"] = dict(bybit_trade.get("options", {}))
+        bybit_spot_cfg["options"]["defaultType"] = "spot"
         trade_clients["bybit_spot"] = ccxt.bybit(bybit_spot_cfg)
-        if Config.BYBIT_DEMO:
-            trade_clients["bybit_spot"].set_sandbox_mode(True)
     log.info(f"Bybit rates: publico | trade: {'demo' if Config.BYBIT_DEMO else 'real' if Config.BYBIT_API_KEY else 'sin key'}")
 
     # ── Binance ────────────────────────────────────────────────────────────────
@@ -200,7 +198,8 @@ def check_auth(trade_clients):
             log.info(f"[{name}] Auth OK | USDT: ${free:.2f} libre / ${total:.2f} total")
         except Exception as e:
             err = str(e)
-            if is_demo and _is_demo_limit(err):
+            if is_demo and (_is_demo_limit(err) or "string indices" in err or "integer" in err):
+                # Bitget demo devuelve formato de balance no estandar — auth es valida
                 results[name] = {"status": "ok", "free": None, "total": None,
                                  "error": None, "demo": True,
                                  "note": "Cuenta demo activa"}
@@ -520,9 +519,9 @@ class FundingBot:
                 status = "ABIERTA"
             elif best_spread >= Config.MIN_SPREAD:
                 lo, sh = data["spread_long"], data["spread_short"]
-                # Verificar que ambos exchanges tengan trade client
                 if lo and sh and (Config.PAPER_TRADING or
                    (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients))):
+                    status = f"SPREAD {lo}→{sh}"
                     spread_opps.append((sym, best_spread, lo, sh))
                 else:
                     status = f"sin key ({lo}/{sh})"
@@ -530,12 +529,6 @@ class FundingBot:
                 status = "—"
 
             log.info(f"{sym:<18}{rates_str}  {best_spread:>7.4f}%  {status}")
-
-            if not has_pos and best_spread >= Config.MIN_SPREAD:
-                lo, sh = data["spread_long"], data["spread_short"]
-                if lo and sh and (Config.PAPER_TRADING or
-                   (can_trade(lo, self.trade_clients) and can_trade(sh, self.trade_clients))):
-                    spread_opps.append((sym, best_spread, lo, sh))
 
         # Actualizar funding
         for pos in list(self.pm.positions):
