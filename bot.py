@@ -176,9 +176,25 @@ def check_auth(trade_clients):
             continue
         try:
             balance = client.fetch_balance()
-            usdt  = balance.get("USDT", {})
-            free  = float(usdt.get("free",  0))
-            total = float(usdt.get("total", 0))
+            # Bitget y algunos exchanges devuelven estructura diferente
+            # Intentamos varios formatos posibles
+            free = total = 0.0
+            if isinstance(balance, dict):
+                if "USDT" in balance and isinstance(balance["USDT"], dict):
+                    free  = float(balance["USDT"].get("free",  0) or 0)
+                    total = float(balance["USDT"].get("total", 0) or 0)
+                elif "free" in balance and isinstance(balance["free"], dict):
+                    free  = float(balance["free"].get("USDT",  0) or 0)
+                    total = float(balance["total"].get("USDT", 0) or 0)
+                elif "info" in balance:
+                    # Formato raw — buscar USDT en la lista
+                    info = balance["info"]
+                    if isinstance(info, list):
+                        for item in info:
+                            if isinstance(item, dict) and item.get("marginCoin") == "USDT":
+                                free  = float(item.get("available", 0) or 0)
+                                total = float(item.get("equity",    0) or 0)
+                                break
             results[name] = {"status": "ok", "free": round(free, 2),
                              "total": round(total, 2), "error": None,
                              "demo": is_demo, "note": None}
