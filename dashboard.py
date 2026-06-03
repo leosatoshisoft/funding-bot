@@ -63,6 +63,38 @@ def api_summary():
 def api_logs():
     return jsonify(load_log_tail(100))
 
+@app.route("/api/activity")
+def api_activity():
+    """Parsea los logs y devuelve eventos recientes del bot."""
+    lines = load_log_tail(300)
+    events = []
+    keywords = {
+        "Abierto:":     ("open",    "Posición abierta"),
+        "Cerrado:":     ("close",   "Posición cerrada"),
+        "Funding ":     ("funding", "Funding cobrado"),
+        "[PAPER] LONG": ("paper",   "Paper: LONG ejecutado"),
+        "[PAPER] SHORT":("paper",   "Paper: SHORT ejecutado"),
+        "[DEMO/REAL]":  ("order",   "Orden ejecutada"),
+        "Auth OK":      ("auth",    "Auth verificada"),
+        "Auth FAILED":  ("error",   "Error de auth"),
+        "Error abriendo":("error",  "Error al abrir"),
+        "Error cerrando":("error",  "Error al cerrar"),
+        "spread_invertido":("warn", "Spread invertido"),
+        "RESUMEN":      ("summary", "Resumen de ciclo"),
+        "Iniciando ciclo":("cycle", "Nuevo ciclo iniciado"),
+    }
+    for line in reversed(lines):
+        for kw, (etype, label) in keywords.items():
+            if kw in line:
+                # Extraer timestamp
+                ts = line[:23] if len(line) > 23 else ""
+                msg = line[line.find(kw):].strip()
+                events.append({"type": etype, "label": label, "msg": msg, "ts": ts})
+                break
+        if len(events) >= 50:
+            break
+    return jsonify(events)
+
 HTML = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -152,6 +184,15 @@ tr:hover td{background:var(--s2)}
 .ex-ok{background:var(--green)}.ex-err{background:var(--red)}.ex-load{background:var(--amber)}
 .btn{background:var(--s2);border:1px solid var(--b);color:var(--t);padding:6px 14px;border-radius:8px;cursor:pointer;font-size:12px}
 .btn:hover{background:var(--s)}
+.feed-row{display:grid;grid-template-columns:28px 140px 1fr;gap:8px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--b);font-size:12px}
+.feed-row:last-child{border-bottom:none}
+.feed-row:hover{background:var(--s2)}
+.feed-icon{font-size:14px;text-align:center}
+.feed-ts{color:var(--m);font-family:monospace;font-size:11px}
+.feed-msg{color:var(--t);word-break:break-word}
+.ft-open{color:var(--green)}.ft-close{color:var(--amber)}.ft-funding{color:var(--teal)}
+.ft-error{color:var(--red)}.ft-warn{color:var(--amber)}.ft-paper{color:var(--purple)}
+.ft-cycle{color:var(--m)}.ft-summary{color:var(--blue)}.ft-auth{color:var(--m)}.ft-order{color:var(--green)}
 </style>
 </head>
 <body>
@@ -210,6 +251,16 @@ tr:hover td{background:var(--s2)}
       <span style="font-size:12px;color:var(--m)">Cargando exchanges...</span>
     </div>
     <div id="opps-list"><div class="empty">Cargando datos de exchanges...</div></div>
+
+    <div style="margin-top:20px">
+      <div style="font-size:11px;font-weight:500;color:var(--m);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+        <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 1.5s infinite"></span>
+        Feed de actividad del bot — en vivo
+      </div>
+      <div id="activity-feed" style="background:var(--s);border:1px solid var(--b);border-radius:10px;overflow:hidden;max-height:320px;overflow-y:auto">
+        <div class="empty">Esperando actividad...</div>
+      </div>
+    </div>
   </div>
 
   <!-- Historial -->
@@ -529,6 +580,28 @@ function switchTab(name){
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='logs')loadLogs();
+  if(name==='opps'){loadOpps();loadActivity();}
+}
+
+async function loadActivity(){
+  const events = await fetchJson('/api/activity');
+  const feed = document.getElementById('activity-feed');
+  if(!events?.length){feed.innerHTML='<div class="empty">Sin actividad reciente</div>';return;}
+  const icons = {
+    open:'🟢', close:'🟡', funding:'💰', paper:'📋',
+    order:'⚡', auth:'🔑', error:'🔴', warn:'⚠️',
+    cycle:'🔄', summary:'📊'
+  };
+  feed.innerHTML = events.map(e => {
+    const icon = icons[e.type] || '•';
+    const cls  = 'ft-' + e.type;
+    const ts   = e.ts ? e.ts.replace('2026-','').replace('T',' ') : '';
+    return '<div class="feed-row">' +
+      '<span class="feed-icon">' + icon + '</span>' +
+      '<span class="feed-ts">' + ts + '</span>' +
+      '<span class="feed-msg ' + cls + '">' + e.msg + '</span>' +
+    '</div>';
+  }).join('');
 }
 
 async function loadAll(){
@@ -538,7 +611,11 @@ async function loadAll(){
 
 loadAll();
 setInterval(loadAll,15000);
-setInterval(()=>{if(document.querySelector('.tab.active')?.textContent.includes('Logs'))loadLogs();},10000);
+setInterval(()=>{
+  const active = document.querySelector('.tab.active')?.textContent || '';
+  if(active.includes('Logs'))loadLogs();
+  if(active.includes('Oportunidades'))loadActivity();
+},10000);
 </script>
 </body>
 </html>"""
